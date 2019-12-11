@@ -56,6 +56,8 @@ func Run(tty bool, comArray []string, res *subsystem.ResourceConfig, volume, con
 	_ = cgroupManager.Apply(parent.Process.Pid)
 
 	logrus.Infof("comArray is %v", comArray)
+
+	// 父进程向子进程通过管道发送信息
 	sendInitCommand(comArray, writePipe)
 
 	// 只有在 -ti 交互模式下才需要等待子进程，否则就是后台运行模式，即父进程就直接退出
@@ -73,7 +75,12 @@ func Run(tty bool, comArray []string, res *subsystem.ResourceConfig, volume, con
 func sendInitCommand(comArray []string, writePipe *os.File) {
 	command := strings.Join(comArray, " ")
 	logrus.Infof("command: [%v]", command)
-	_, _ = writePipe.WriteString(command)
+	bytes, err := writePipe.WriteString(command)
+	logrus.Infof("sendInitCommand: write bytes %d", bytes)
+	if err != nil {
+		logrus.Infof("sendInitCommand: write err %v.",err)
+	}
+
 	writePipe.Close()
 }
 

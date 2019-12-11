@@ -46,8 +46,8 @@ type ContainerInfo struct {
 	Command     string `json:"command"`    //容器内init运行命令
 	CreatedTime string `json:"createdTime"` //创建时间
 	Status      string `json:"status"`     //容器的状态
-	//Volume      string `json:"volume"`     //容器的数据卷
-	//PortMapping []string `json:"portmapping"` //端口映射
+	Volume      string `json:"volume"`     //容器的数据卷
+	PortMapping []string `json:"portmapping"` //端口映射
 }
 
 // version 2 2019-12-02
@@ -80,9 +80,9 @@ func NewParentProcess(tty bool, volume, containerName string) (*exec.Cmd, *os.Fi
 	}
 	//cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uint32(1), Gid: uint32(1)}
 	// 如果开启终端，读入终端的输入
-	cmd.Stdin = os.Stdin
+	//cmd.Stdin = os.Stdin
 	if tty {
-		//cmd.Stdin = os.Stdin
+		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}else{
