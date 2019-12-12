@@ -16,7 +16,10 @@ func main() {
 		commitCommand,
 		listCommand,
 		logCommand,
-		execCommand,
+		execCommand, // 实现了，但是有bug，还没解决
+		networkCommand,
+		//stopCommand, // 还没实现
+		//removeCommand, // 还没实现
 	}
 	if err := app.Run(os.Args); err != nil {
 		logrus.Fatal(err)

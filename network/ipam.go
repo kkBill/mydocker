@@ -1,8 +1,11 @@
 package network
 
 import (
+	"encoding/json"
 	"github.com/Sirupsen/logrus"
 	"net"
+	"os"
+	"path"
 	"strings"
 )
 
@@ -23,13 +26,58 @@ var ipAllocator = &IPAM{
 
 // 加载网段地址分配信息
 func (ipam *IPAM) load() error {
+	if _, err := os.Stat(ipam.SubnetAllocatorPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		} else {
+			return err
+		}
+	}
+	subnetConfigFile, err := os.Open(ipam.SubnetAllocatorPath)
+	defer subnetConfigFile.Close()
+	if err != nil {
+		return err
+	}
+	subnetJson := make([]byte, 2000)
+	n, err := subnetConfigFile.Read(subnetJson)
+	if err != nil {
+		return err
+	}
 
+	err = json.Unmarshal(subnetJson[:n], ipam.Subnets)
+	if err != nil {
+		logrus.Errorf("Error dump allocation info, %v", err)
+		return err
+	}
 	return nil
 }
 
 // 存储网段地址分配信息
 func (ipam *IPAM) dump() error {
+	ipamConfigFileDir, _ := path.Split(ipam.SubnetAllocatorPath)
+	if _, err := os.Stat(ipamConfigFileDir); err != nil {
+		if os.IsNotExist(err) {
+			os.MkdirAll(ipamConfigFileDir, 0644)
+		} else {
+			return err
+		}
+	}
+	subnetConfigFile, err := os.OpenFile(ipam.SubnetAllocatorPath, os.O_TRUNC | os.O_WRONLY | os.O_CREATE, 0644)
+	defer subnetConfigFile.Close()
 
+	if err != nil {
+		return err
+	}
+
+	ipamConfigJson, err := json.Marshal(ipam.Subnets)
+	if err != nil {
+		return err
+	}
+
+	_, err = subnetConfigFile.Write(ipamConfigJson)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -80,6 +128,10 @@ func (ipam *IPAM) Allocate(subnet *net.IPNet) (ip net.IP, err error) {
 // 释放IP地址
 func (ipam *IPAM) Release(subnet *net.IPNet, ipaddr *net.IP) error {
 	ipam.Subnets = &map[string]string{}
+
+	// ?
+	_, subnet, _ = net.ParseCIDR(subnet.String())
+
 	// 从文件中加载网段的分配信息
 	err := ipam.load()
 	if err != nil {

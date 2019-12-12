@@ -6,10 +6,14 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/kkBill/mydocker/container"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"net"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -61,6 +65,7 @@ func CreateNetwork(driver, subnet, name string) error {
 
 	// 通过调用指定的网络驱动创建网络，本项目中以Bridge驱动实现
 	network, err := drivers[driver].Create(ipNet.String(), name);
+	logrus.Infof("network: %v", network)
 	if err != nil {
 		return err
 	}
@@ -177,12 +182,115 @@ func Connect(networkName string, cinfo *container.ContainerInfo) error {
 }
 
 func configEndpointIpAddressAndRoute(endpoint *Endpoint, cinfo *container.ContainerInfo) error {
+	peerLink, err := netlink.LinkByName(endpoint.Device.Name)
+	if err != nil {
+		return fmt.Errorf("configEndpointIpAddressAndRoute: fail config endpoint: %v", err)
+	}
+	// 将容器的网络端点加入到容器的network namespace
+	// 并使该函数之后的操作都在这个network namespace中进行
+	// 执行完 configEndpointIpAddressAndRoute() 之后，再恢复为默认的 network namespace
+	defer enterContainerNetns(&peerLink, cinfo)()
+
+	interfaceIP := *endpoint.Network.IpRange
+	interfaceIP.IP = endpoint.IPAddress
+
+	// 设置容器内 Veth 端的ip
+	if err = setInterfaceIP(endpoint.Device.PeerName, interfaceIP.String()); err != nil {
+		return fmt.Errorf("%v,%s", endpoint.Network, err)
+	}
+
+	// 启动容器内的 Veth 端点
+	if err = setInterfaceUP(endpoint.Device.PeerName); err != nil {
+		return err
+	}
+
+	// net namespace 中默认本地地址127.0.0.1的“lo”网卡是关闭状态
+	// 启动它以保证容器访问自己的请求
+	if err = setInterfaceUP("lo"); err != nil {
+		return err
+	}
+
+	// 设置容器内的外部请求都通过容器内的Veth端点进行访问
+	// 0.0.0.0/0 的网段，表示所有的ip地址端
+	_, cidr, _ := net.ParseCIDR("0.0.0.0/0")
+	// 构建要添加的路由数据，包括网络设备、网关IP和目的网段
+	defaultRoute := &netlink.Route{
+		LinkIndex: peerLink.Attrs().Index,
+		Gw:        endpoint.Network.IpRange.IP,
+		Dst:       cidr,
+	}
+	// 添加路由到容器的网络空间
+	// 相当于执行 route add 命令
+	if err = netlink.RouteAdd(defaultRoute); err != nil {
+		return err
+	}
 
 	return nil
 }
 
-func configPortMapping(endpoint *Endpoint, cinfo *container.ContainerInfo) error {
+// 锁定当前程序所执行的线程，使当前线程进入到容器的网络空间
+// 返回值是一个函数指针，执行这个返回函数才会退出容器的网络空间，回归宿主机的网络空间
+func enterContainerNetns(enLink *netlink.Link, cinfo *container.ContainerInfo) func() {
+	// 找到容器的net namespace
+	// /proc/[pid]/ns/net 打开这个文件的文件描述符就可以来操作net namespace
+	// ContainerInfo中的PID，即容器再宿主机上映射的PID
+	// 它对应的 /proc/[pid]/ns/net 就是容器内部的 net namespace
+	file, err := os.OpenFile(fmt.Sprintf("/proc/%s/ns/net", cinfo.Pid), os.O_RDONLY, 0)
+	if err != nil {
+		logrus.Errorf("error get container net namespace, %v", err)
+	}
 
+	// 取到文件的文件描述符 file descriptor
+	nsFD := file.Fd()
+
+	// 锁定当前程序执行的线程，以保证一直在所需要的net namespace 中
+	//
+	runtime.LockOSThread()
+
+	// 修改veth peer 另外一端，将其移到容器的 net namespace中
+	if err = netlink.LinkSetNsFd(*enLink, int(nsFD)); err != nil {
+		logrus.Errorf("error set link netns , %v", err)
+	}
+
+	// 获取当前的网络namespace
+	origins, err := netns.Get()
+	if err != nil {
+		logrus.Errorf("error get current netns, %v", err)
+	}
+
+	// 设置当前进程到新的网络namespace，并在函数执行完成之后再恢复到之前的namespace
+	if err = netns.Set(netns.NsHandle(nsFD)); err != nil {
+		logrus.Errorf("error set netns, %v", err)
+	}
+
+	// 调用此函数，将程序恢复到原来的 net namespace 中
+	return func() {
+		// 恢复到之前的 net namespace 中
+		netns.Set(origins)
+		origins.Close()
+		runtime.UnlockOSThread()
+		file.Close()
+	}
+}
+
+// 配置端口映射
+func configPortMapping(endpoint *Endpoint, cinfo *container.ContainerInfo) error {
+	for _, pm := range endpoint.PortMapping {
+		portMapping := strings.Split(pm, ":")
+		if len(portMapping) != 2 {
+			logrus.Errorf("port mapping format error, %v", pm)
+			continue
+		}
+		iptablesCmd := fmt.Sprintf("-t nat -A PREROUTING -p tcp -m tcp --dport %s -j DNAT --to-destination %s:%s",
+			portMapping[0], endpoint.IPAddress.String(), portMapping[1])
+		cmd := exec.Command("iptables", strings.Split(iptablesCmd, " ")...)
+		//err := cmd.Run()
+		output, err := cmd.Output()
+		if err != nil {
+			logrus.Errorf("iptables Output, %v", output)
+			continue
+		}
+	}
 	return nil
 }
 
@@ -224,7 +332,7 @@ func Init() error {
 	return nil
 }
 
-func ListNetwork()  {
+func ListNetwork() {
 	w := tabwriter.NewWriter(os.Stdout, 12, 1, 3, ' ', 0)
 	fmt.Fprint(w, "NAME\tIP-RANGE\tDRIVER\n")
 	// 遍历网络信息
@@ -243,7 +351,7 @@ func DeleteNetwork(networkName string) error {
 	// 查找网络是否存在
 	nw, ok := networks[networkName]
 	if !ok {
-		return fmt.Errorf("DeleteNetwork: No such network: %s",networkName)
+		return fmt.Errorf("DeleteNetwork: No such network: %s", networkName)
 	}
 
 	// 调用 IPAM 的实例 ipAllocator 释放网络网关的IP
