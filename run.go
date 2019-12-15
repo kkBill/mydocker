@@ -7,6 +7,7 @@ import (
 	"github.com/kkBill/mydocker/cgroup"
 	"github.com/kkBill/mydocker/cgroup/subsystem"
 	"github.com/kkBill/mydocker/container"
+	"github.com/kkBill/mydocker/network"
 	"math/rand"
 	"os"
 	"strconv"
@@ -25,6 +26,8 @@ func Run(tty bool, command string) {
 }
 */
 
+// version 2 2019-12-13
+/*
 func Run(tty bool, comArray []string, res *subsystem.ResourceConfig, volume, containerName string) {
 	// 1.generate container ID (random 10 bits number)
 	containerID := generateRandomID(10)
@@ -71,6 +74,67 @@ func Run(tty bool, comArray []string, res *subsystem.ResourceConfig, volume, con
 
 	//os.Exit(0)
 }
+*/
+
+// version 3
+func Run(tty bool, comArray []string, res *subsystem.ResourceConfig, volume, containerName, imageName string,
+	nw string, portmapping []string) {
+	// generate container ID (random 10 bits number)
+	containerID := generateRandomID(10)
+	if containerName == "" {
+		containerName = containerID
+	}
+
+	parent, writePipe := container.NewParentProcess(tty, volume, containerName, imageName)
+	if parent == nil {
+		logrus.Errorf("new parent process failed")
+		return
+	}
+
+	if err := parent.Start(); err != nil {
+		logrus.Error(err)
+	}
+
+	// 记录容器信息
+	containerName, err := recordContainerInfo(parent.Process.Pid, comArray, containerName, containerID, volume)
+	if err != nil {
+		logrus.Errorf("record container info error %v", err)
+		return
+	}
+
+	// 资源限制 cgroup
+	cgroupManager := cgroup.NewCgroupManager("mydocker-cgroup")
+	defer cgroupManager.Remove()
+	_ = cgroupManager.Set(res)
+	_ = cgroupManager.Apply(parent.Process.Pid)
+
+	//
+	if nw != "" {
+		// 配置容器网络
+		network.Init()
+		containerInfo := &container.ContainerInfo{
+			Pid:         strconv.Itoa(parent.Process.Pid),
+			Id:          containerID,
+			Name:        containerName,
+			PortMapping: portmapping,
+		}
+
+		if err := network.Connect(nw, containerInfo); err != nil {
+			logrus.Errorf("Run: error Connect Network %v", err)
+			return
+		}
+	}
+
+	// 父进程向子进程通过管道发送信息
+	sendInitCommand(comArray, writePipe)
+
+	// 只有在 -ti 交互模式下才需要等待子进程，否则就是后台运行模式，即父进程就直接退出
+	if tty {
+		parent.Wait()
+		deleteContainerInfo(containerName)
+		container.DeleteWorkSpace(volume, containerName)
+	}
+}
 
 func sendInitCommand(comArray []string, writePipe *os.File) {
 	command := strings.Join(comArray, " ")
@@ -78,7 +142,7 @@ func sendInitCommand(comArray []string, writePipe *os.File) {
 	bytes, err := writePipe.WriteString(command)
 	logrus.Infof("sendInitCommand: write bytes %d", bytes)
 	if err != nil {
-		logrus.Infof("sendInitCommand: write err %v.",err)
+		logrus.Infof("sendInitCommand: write err %v.", err)
 	}
 
 	writePipe.Close()
@@ -95,9 +159,8 @@ func generateRandomID(n int) string {
 }
 
 // 记录容器的信息
-func recordContainerInfo(containerPid int, commandArray []string, containerName, containerID string) (string, error) {
-
-	// 2.current time of creating container
+func recordContainerInfo(containerPid int, commandArray []string, containerName, containerID, volume string) (string, error) {
+	// current time of creating container
 	createTime := time.Now().Format("2006-01-02 15:04:05")
 	command := strings.Join(commandArray, "")
 
@@ -108,6 +171,7 @@ func recordContainerInfo(containerPid int, commandArray []string, containerName,
 		Command:     command,
 		CreatedTime: createTime,
 		Status:      container.RUNNING,
+		Volume:      volume,
 	}
 	// 将容器信息的对象json序列化成字符串
 	bytes, err := json.Marshal(containerInfo)
@@ -140,7 +204,7 @@ func recordContainerInfo(containerPid int, commandArray []string, containerName,
 	return containerName, nil
 }
 
-func deleteContainerInfo(containerName string)  {
+func deleteContainerInfo(containerName string) {
 	dirURL := fmt.Sprintf(container.DefaultInfoLocation, containerName)
 	if err := os.RemoveAll(dirURL); err != nil {
 		logrus.Errorf("Remove dir %s error %v", dirURL, err)

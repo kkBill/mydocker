@@ -26,6 +26,7 @@ func RunContainerInitProcess() error {
 
 	// exec.LookPath() 寻找命令的绝对路径
 	// 比如 exec.LookPath("ls") --> /usr/bin/ls
+	logrus.Infof("commandArray[0]: %v", commandArray[0])
 	path, err := exec.LookPath(commandArray[0])
 	if err != nil {
 		logrus.Errorf("exec look path error: %v", err)
@@ -63,7 +64,7 @@ func setUpMount() {
 	}
 	logrus.Infof("setUpMount: Current location is %s", pwd)
 
-	//_ = pivotRoot(pwd)
+	pivotRoot(pwd)
 
 	//mount proc
 	//syscall.Mount("", "/", "", syscall.MS_PRIVATE | syscall.MS_REC, "")

@@ -152,6 +152,7 @@ func Connect(networkName string, cinfo *container.ContainerInfo) error {
 	if err != nil {
 		return err
 	}
+	logrus.Infof("Connect: ip: %v",ip.To4())
 
 	// 创建网络端点
 	endpoint := &Endpoint{
@@ -162,19 +163,23 @@ func Connect(networkName string, cinfo *container.ContainerInfo) error {
 		PortMapping: cinfo.PortMapping,
 		Network:     network,
 	}
+	//logrus.Infof("Connect: endpoint: %v",endpoint)
 
 	// 调用网络驱动的Connect()方法，连接和配置网络端点
 	if err := drivers[network.Driver].Connect(network, endpoint); err != nil {
+		logrus.Errorf("drivers[network.Driver].Connect: error %v", err)
 		return err
 	}
 
 	// 进入容器的network namespace 配置容器网络设备的IP地址和路由
 	if err := configEndpointIpAddressAndRoute(endpoint, cinfo); err != nil {
+		logrus.Errorf("configEndpointIpAddressAndRoute: error %v", err)
 		return err
 	}
 
 	// 配置容器到宿主机的端口映射
 	if err := configPortMapping(endpoint, cinfo); err != nil {
+		logrus.Errorf("configPortMapping: error %v", err)
 		return err
 	}
 

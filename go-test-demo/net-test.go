@@ -15,6 +15,7 @@ func main() {
 	ip.Mask(ipv4Mask)
 	fmt.Println(ip)
 	ip = ip.To4() // 将IP地址转换成以4个字节表示的方式
+	fmt.Println(ip)
 	fmt.Println(len(ip))
 
 	var c uint32 = 65555
@@ -34,4 +35,10 @@ func main() {
 	//}
 	//fmt.Println(ipv4Addr)
 	//fmt.Println(ipv4Net)
+	fmt.Println("-------")
+	subnet := "172.255.0.23/12"
+	ip, ipRange, _ := net.ParseCIDR(subnet)
+	fmt.Println(ip)
+	fmt.Println(ipRange)
+	fmt.Println(ipRange.IP)
 }

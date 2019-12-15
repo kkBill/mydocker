@@ -61,7 +61,7 @@ func NewPipe() (*os.File, *os.File, error) {
 }
 
 // 这个函数不太理解(2019-12-05)
-func NewParentProcess(tty bool, volume, containerName string) (*exec.Cmd, *os.File) {
+func NewParentProcess(tty bool, volume, containerName, imageName string) (*exec.Cmd, *os.File) {
 	readPipe, writePipe, err := NewPipe()
 	if err != nil {
 		logrus.Errorf("New pipe error %v", err)
@@ -108,10 +108,10 @@ func NewParentProcess(tty bool, volume, containerName string) (*exec.Cmd, *os.Fi
 	// 就是通过cmd的这个属性把readPipe这个文件传给子进程
 	cmd.ExtraFiles = []*os.File{readPipe}
 
-	mntURL := "/root/mnt/"
-	rootURL := "/root/"
-	NewWorkSpace(rootURL, mntURL, volume)
+	//mntURL := "/root/mnt/"
+	//rootURL := "/root/"
+	NewWorkSpace(volume, imageName, containerName)
 	// Dir specifies the working directory of the command.
-	cmd.Dir = mntURL
+	cmd.Dir = fmt.Sprintf(MntUrl, containerName)
 	return cmd, writePipe
 }

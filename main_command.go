@@ -42,12 +42,16 @@ var runCommand = cli.Command{
 			Name:  "name",
 			Usage: "container name",
 		},
+		cli.StringSliceFlag{
+			Name:  "e",
+			Usage: "set environment",
+		},
 		cli.StringFlag{
 			Name:  "net",
 			Usage: "container network",
 		},
 		cli.StringSliceFlag{
-			Name: "p",
+			Name:  "p",
 			Usage: "port mapping",
 		},
 	},
@@ -60,9 +64,15 @@ var runCommand = cli.Command{
 		for _, arg := range context.Args() {
 			cmdArray = append(cmdArray, arg)
 		}
+
+		//for _, e := range cmdArray {
+		//	fmt.Printf("%v ", e)
+		//}
+		//fmt.Println()
 		// 比如shell中输出的是$ ./mydocker run -d sh
 		// 那么cmdArray 就是 [sh]
-		cmdArray = cmdArray[0:]
+		imageName := cmdArray[0]
+		cmdArray = cmdArray[1:]
 
 		tty := context.Bool("ti")
 		detach := context.Bool("d")
@@ -77,9 +87,14 @@ var runCommand = cli.Command{
 		}
 		volume := context.String("v")
 		containerName := context.String("name")
+		network := context.String("net")
+
+		//envSlice := context.StringSlice("e")
+		portmapping := context.StringSlice("p")
 
 		logrus.Infof("tty %v", tty)
-		Run(tty, cmdArray, resconfig, volume, containerName)
+		//Run(tty, cmdArray, resconfig, volume, containerName)
+		Run(tty, cmdArray, resconfig, volume, containerName, imageName, network, portmapping)
 		return nil
 	},
 }
@@ -94,16 +109,17 @@ var initCommand = cli.Command{
 	},
 }
 
-// 用法： mydocker commit xxximage
+// 用法： mydocker commit containerName imageName
 var commitCommand = cli.Command{
 	Name:  "commit",
 	Usage: "commit a container into image",
 	Action: func(context *cli.Context) error {
-		if len(context.Args()) < 1 {
-			return fmt.Errorf("commitCommand: missing container name...")
+		if len(context.Args()) < 2 {
+			return fmt.Errorf("commitCommand: missing container name & imageName...")
 		}
-		imageName := context.Args().Get(0)
-		commitContainer(imageName)
+		containerName := context.Args().Get(0)
+		imageName := context.Args().Get(1)
+		commitContainer(containerName, imageName)
 		return nil
 	},
 }
@@ -131,15 +147,43 @@ var logCommand = cli.Command{
 	},
 }
 
+// 命令格式为：mydocker stop 容器名
+var stopCommand = cli.Command{
+	Name:  "stop",
+	Usage: "stop a container",
+	Action: func(context *cli.Context) error {
+		if len(context.Args()) < 1 {
+			return fmt.Errorf("Missing container name")
+		}
+		containerName := context.Args().Get(0)
+		stopContainer(containerName)
+		return nil
+	},
+}
+
+// 命令格式为：mydocker rm 容器名
+var removeCommand = cli.Command{
+	Name:  "rm",
+	Usage: "remove unused containers",
+	Action: func(context *cli.Context) error {
+		if len(context.Args()) < 1 {
+			return fmt.Errorf("Missing container name")
+		}
+		containerName := context.Args().Get(0)
+		removeContainer(containerName)
+		return nil
+	},
+}
+
+// 命令格式为：mydocker exec 容器名 命令
 var execCommand = cli.Command{
 	Name:  "exec",
 	Usage: "exec a command into coontainer",
 	Action: func(context *cli.Context) error {
-		if os.Getenv(ENV_EXEC_PID) != ""{
+		if os.Getenv(ENV_EXEC_PID) != "" {
 			logrus.Infof("execCommand: pid callback, pid is: %v", os.Getpid())
 			return nil
 		}
-		// 命令格式为：mydocker exec 容器名 命令
 		if len(context.Args()) < 2 {
 			return fmt.Errorf("execCommand: missing container name or command")
 		}
@@ -154,12 +198,13 @@ var execCommand = cli.Command{
 	},
 }
 
+// 这部分代码没有问题，可以正常创建、展示和删除网络对象
 var networkCommand = cli.Command{
 	Name:  "network",
 	Usage: "container network commands",
-	Subcommands: []cli.Command {
+	Subcommands: []cli.Command{
 		{
-			Name: "create",
+			Name:  "create",
 			Usage: "create a container network",
 			Flags: []cli.Flag{
 				cli.StringFlag{
@@ -171,12 +216,12 @@ var networkCommand = cli.Command{
 					Usage: "subnet cidr",
 				},
 			},
-			Action:func(context *cli.Context) error {
+			Action: func(context *cli.Context) error {
 				if len(context.Args()) < 1 {
 					return fmt.Errorf("Missing network name")
 				}
 				network.Init()
-				logrus.Infof("bridgeName %s\n",context.Args()[0])
+				logrus.Infof("bridgeName %s\n", context.Args()[0])
 				err := network.CreateNetwork(context.String("driver"), context.String("subnet"), context.Args()[0])
 				if err != nil {
 					return fmt.Errorf("create network error: %+v", err)
@@ -185,18 +230,18 @@ var networkCommand = cli.Command{
 			},
 		},
 		{
-			Name: "list",
+			Name:  "list",
 			Usage: "list container network",
-			Action:func(context *cli.Context) error {
+			Action: func(context *cli.Context) error {
 				network.Init()
 				network.ListNetwork()
 				return nil
 			},
 		},
 		{
-			Name: "remove",
+			Name:  "remove",
 			Usage: "remove container network",
-			Action:func(context *cli.Context) error {
+			Action: func(context *cli.Context) error {
 				if len(context.Args()) < 1 {
 					return fmt.Errorf("Missing network name")
 				}

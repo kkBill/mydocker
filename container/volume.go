@@ -1,6 +1,7 @@
 package container
 
 import (
+	"fmt"
 	"github.com/Sirupsen/logrus"
 	"os"
 	"os/exec"
@@ -16,73 +17,88 @@ import (
 // 5.如果返回的字符串长度为2，且数据元素均不为空，则执行MountVolume()进行挂载（该函数的具体流程见后）
 // 6.否则提示用户创建数据卷的输入值不对
 // 执行数据卷挂载的命令：./mydocker run -ti -v /root/volume:/containerVolume sh
-func NewWorkSpace(rootURL string, mntURL string, volume string) {
-	CreateReadOnlyLayer(rootURL)
-	CreateWriteLayer(rootURL)
-	CreateMountPoint(rootURL, mntURL)
+
+// 为每个容器创建文件系统
+func NewWorkSpace(volume, imageName, containerName string) {
+	CreateReadOnlyLayer(imageName)
+	CreateWriteLayer(containerName)
+	CreateMountPoint(containerName, imageName)
 
 	// 根据volume是否为空判断是否执行挂载数据卷操作
-	if volume != ""{
+	if volume != "" {
 		volumeURLs := strings.Split(volume, ":")
-		if len(volumeURLs) ==2 && volumeURLs[0] != "" && volumeURLs[1] != ""{
-			MountVolume(rootURL,mntURL,volumeURLs)
-			logrus.Infof("%q", volumeURLs)
-		}else{
+		if len(volumeURLs) == 2 && volumeURLs[0] != "" && volumeURLs[1] != "" {
+			MountVolume(volumeURLs, containerName)
+			logrus.Infof("NewWorkSpace volume urls %q", volumeURLs)
+		} else {
 			logrus.Infof("volume parameters input is invalid.")
 		}
 	}
 }
 
-// 将 busybox.tar 解压到 busybox 目录下，作为容器的只读层
-func CreateReadOnlyLayer(rootURL string) {
-	busyboxURL := rootURL + "busybox/"
-	busyboxTarURL := rootURL + "busybox.tar"
+// 根据用户输入的镜像为每个容器创建只读层
+// 解压tar格式的镜像文件，作为容器的只读层
+func CreateReadOnlyLayer(imageName string) error {
+	unTarFolderURL := RootUrl + "/" + imageName + "/"
+	imageURL := RootUrl + "/" + imageName + ".tar"
 
-	exists, err := PathExists(busyboxURL)
+	exists, err := PathExists(unTarFolderURL)
 	if err != nil {
-		logrus.Infof("fail to judge whether dir %s exists or not. %v", busyboxURL, err)
+		logrus.Infof("fail to judge whether dir %s exists or not. %v", unTarFolderURL, err)
+		return err
 	}
-	if exists == false {
-		if err := os.Mkdir(busyboxURL, 0777); err != nil {
-			logrus.Errorf("mkdir %s error. %v", busyboxURL, err)
+	if !exists {
+		if err := os.MkdirAll(unTarFolderURL, 0777); err != nil {
+			logrus.Errorf("CreateReadOnlyLayer: mkdir %s error. %v", unTarFolderURL, err)
+			return err
 		}
-		// 这一句不懂
-		if _, err := exec.Command("tar", "-xvf", busyboxTarURL, "-C", busyboxURL).CombinedOutput();
+		// 解压
+		if _, err := exec.Command("tar", "-xvf", imageURL, "-C", unTarFolderURL).CombinedOutput();
 			err != nil {
-			logrus.Errorf("ubTar dir %s error %v", busyboxTarURL, err)
+			logrus.Errorf("CreateReadOnlyLayer: unTar dir %s error %v", imageURL, err)
+			return err
 		}
 	}
+	return nil
 }
 
 // 创建一个名为writeLayer的文件夹作为容器唯一的可写层
-func CreateWriteLayer(rootURL string) {
-	writeURL := rootURL + "writeLayer/"
-	if err := os.Mkdir(writeURL, 0777); err != nil {
-		logrus.Infof("Mkdir %s error. %v", writeURL, err)
+// 为每个容器创建一个读写层
+func CreateWriteLayer(containerName string) {
+	writeURL := fmt.Sprintf(WriteLayerUrl, containerName)
+	if err := os.MkdirAll(writeURL, 0777); err != nil {
+		logrus.Errorf("CreateWriteLayer: Mkdir %s error. %v", writeURL, err)
 	}
 }
 
 // 创建mnt文件夹作为挂载点
-func CreateMountPoint(rootURL string, mntURL string) {
-	if err := os.Mkdir(mntURL, 0777); err != nil {
-		logrus.Infof("Mkdir %s error. %v", mntURL, err)
+func CreateMountPoint(containerName, imageName string) error {
+	mntURL := fmt.Sprintf(MntUrl, containerName)
+	if err := os.MkdirAll(mntURL, 0777); err != nil {
+		logrus.Errorf("CreateMountPoint: Mkdir %s error. %v", mntURL, err)
+		return err
 	}
 	// 把writeLayer目录和busybox目录mount到mnt目录下
-	dirs := "dirs=" + rootURL + "writeLayer:" + rootURL + "busybox"
+	tmpWriteLayer := fmt.Sprintf(WriteLayerUrl, containerName)
+	tmpImageLocation := RootUrl + "/" + imageName
+
+	dirs := "dirs=" + tmpWriteLayer + ":" + tmpImageLocation
 	cmd := exec.Command("mount", "-t", "aufs", "-o", dirs, "none", mntURL)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	//cmd.Stdout = os.Stdout
+	//cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		logrus.Errorf("run error. %v", err)
+		return err
 	}
+	return nil
 }
 
 // 挂载数据卷，其基本过程如下：
 // 1.读取宿主机文件目录hostURL，创建宿主机文件目录/root/${hostURL}
-// 2.读取容器挂载点containerURL，在容器文件系统里创建挂载点/root/mnt/${containerURL}
+// 2.读取容器挂载点containerURL，在容器文件系统里创建挂载点/root/mnt/containerName/${containerURL}
 // 3.把宿主机文件目录挂载到容器挂载点
 // 通过以上3步，在启动容器的时候，对数据卷的处理也完成了
-func MountVolume(rootURL, mntURL string, volumeURLs []string)  {
+func MountVolume(volumeURLs []string, containerName string) {
 	// 创建宿主机文件目录
 	parentUrl := volumeURLs[0]
 	if err := os.Mkdir(parentUrl, 0777); err != nil {
@@ -90,21 +106,21 @@ func MountVolume(rootURL, mntURL string, volumeURLs []string)  {
 	}
 	// 在容器的文件系统里创建挂载点目录
 	containerUrl := volumeURLs[1]
-	containerVolumeUrl := mntURL + containerUrl
+	mntURL := fmt.Sprintf(MntUrl, containerName)
+	containerVolumeUrl := mntURL + "/" + containerUrl
 	if err := os.Mkdir(containerVolumeUrl, 0777); err != nil {
 		logrus.Infof("Mkdir container volume dir %s error. %v", containerVolumeUrl, err)
 	}
 
 	// 把宿主机文件目录挂载到容器挂载点上
 	dirs := "dirs=" + parentUrl
-	cmd := exec.Command("mount","-t","aufs","-o",dirs,"none",containerVolumeUrl)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd := exec.Command("mount", "-t", "aufs", "-o", dirs, "none", containerVolumeUrl)
+	//cmd.Stdout = os.Stdout
+	//cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		logrus.Errorf("mount volume failed. %v", err)
 	}
 }
-
 
 // 判断文件路径是否存在
 func PathExists(path string) (bool, error) {
@@ -135,62 +151,71 @@ func volumeUrlExtract(volume string) []string {
 // 补充：
 // 如果volume不为空，且解析出来的字符串数组长度为2，数据元素均不为空，就需要执行DeleteMountPointWithVolume()
 // 否则就执行DeleteMountPoint()
-func DeleteWorkSpace(rootURL, mntURL, volume string) {
+
+// 函数的作用是，当容器退出时，删除容器的文件系统
+func DeleteWorkSpace(volume, containerName string) {
 	// 删除挂载点
 	if volume != "" {
 		volumeUrls := volumeUrlExtract(volume)
 		if len(volumeUrls) == 2 && volumeUrls[0] != "" && volumeUrls[1] != "" {
-			DeleteMountPointWithVolume(rootURL, mntURL, volumeUrls)
-		}else{
-			DeleteMountPoint(rootURL, mntURL)
+			DeleteMountPointWithVolume(volumeUrls, containerName)
+		} else {
+			DeleteMountPoint(containerName)
 		}
-	}else{
-		DeleteMountPoint(rootURL, mntURL)
+	} else {
+		DeleteMountPoint(containerName)
 	}
 	// 删除读写层
-	DeleteWriteLayer(rootURL)
+	DeleteWriteLayer(containerName)
 }
 
 // 1.umount挂载点的文件系统（/root/mnt/${containerUrl}）
 // 2.umount整个容器文件系统的挂载点（/root/mnt）
 // 3.删除容器文件系统的挂载点
-func DeleteMountPointWithVolume(rootURL, mntURL string, volumeURLs []string) {
+func DeleteMountPointWithVolume(volumeURLs []string, containerName string) error {
 	// 1: mntURL = "/root/mnt"; volumeURLs[1] = "/containerVolume"
+	mntURL := fmt.Sprintf(MntUrl, containerName)
 	containerUrl := mntURL + volumeURLs[1]
 	cmd := exec.Command("umount", containerUrl)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+
 	if err := cmd.Run(); err != nil {
 		logrus.Errorf("umount volume failed. %v", err)
+		return err
 	}
-	// 2
+
+	// 2: umount mountpoint
 	cmd = exec.Command("umount", mntURL)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		logrus.Errorf("umount mountpoint failed. %v", err)
+		return err
 	}
 	// 3: 等价于 rm -rf xxx
 	if err := os.RemoveAll(mntURL); err != nil {
 		logrus.Errorf("remove mountpoint dir %s error. %v", mntURL, err)
+		return err
 	}
+	return nil
 }
 
-func DeleteMountPoint(rootURL string, mntURL string) {
+// 删除未挂载数据卷的容器文件系统
+// 先umount，再删除相应的文件夹
+func DeleteMountPoint(containerName string) error {
+	mntURL := fmt.Sprintf(MntUrl, containerName)
 	cmd := exec.Command("umount", mntURL)
-	// 这一步是为什么？
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+
 	if err := cmd.Run(); err != nil {
 		logrus.Errorf("%v", err)
+		return err
 	}
 	if err := os.RemoveAll(mntURL); err != nil {
 		logrus.Errorf("remove dir %s error. %v", mntURL, err)
+		return err
 	}
+	return nil
 }
 
-func DeleteWriteLayer(rootURL string) {
-	writeURL := rootURL + "/writeLayer"
+func DeleteWriteLayer(containerName string) {
+	writeURL := fmt.Sprintf(WriteLayerUrl, containerName)
 	if err := os.RemoveAll(writeURL); err != nil {
 		logrus.Errorf("remove dir %s error. %v", writeURL, err)
 	}
