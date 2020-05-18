@@ -95,6 +95,7 @@ func (ipam *IPAM) Allocate(subnet *net.IPNet) (ip net.IP, err error) {
 	// 比如网段是 127.0.0.0/8，其子网掩码是 255.0.0.0
 	// 那么该函数返回的 ones=8, bits=24
 	ones, bits := subnet.Mask.Size()
+	logrus.Infof("ones: %v, bits: %v", ones, bits)
 
 	// 如果之前没有分配过这个网段，则初始化网段的分配配置
 	if _, exist := (*ipam.Subnets)[subnet.String()]; !exist {

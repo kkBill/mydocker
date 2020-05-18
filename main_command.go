@@ -221,8 +221,12 @@ var networkCommand = cli.Command{
 					return fmt.Errorf("Missing network name")
 				}
 				network.Init()
-				logrus.Infof("bridgeName %s\n", context.Args()[0])
-				err := network.CreateNetwork(context.String("driver"), context.String("subnet"), context.Args()[0])
+
+				bridgeName := context.Args()[0]
+				driverName := context.String("driver")
+				subnetName := context.String("subnet")
+				logrus.Infof("driverName: %s, subnetName: %s, bridgeName: %s\n", driverName, subnetName, bridgeName)
+				err := network.CreateNetwork(driverName, subnetName, bridgeName)
 				if err != nil {
 					return fmt.Errorf("create network error: %+v", err)
 				}

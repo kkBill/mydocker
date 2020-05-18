@@ -56,13 +56,13 @@ func CreateNetwork(driver, subnet, name string) error {
 	// 将网段的字符串转换成net.IPNet的对象
 	_, ipNet, _ := net.ParseCIDR(subnet)
 
-	// 通过IPAM分配网关IP
+	// 通过 IPAM 分配网关IP
 	ip, err := ipAllocator.Allocate(ipNet)
 	if err != nil {
 		return err
 	}
 	ipNet.IP = ip
-
+	// logrus.Infof("ip: %s", ip.To4())  // 可正常分配
 	// 通过调用指定的网络驱动创建网络，本项目中以Bridge驱动实现
 	network, err := drivers[driver].Create(ipNet.String(), name);
 	logrus.Infof("network: %v", network)
@@ -94,7 +94,7 @@ func (network *Network) dump(dumpPath string) error {
 	// 打开文件用于写入
 	file, err := os.OpenFile(nwPath, os.O_TRUNC|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
-		logrus.Errorf("dump: OpenFile error: ", err)
+		logrus.Errorf("dump: OpenFile error: %v", err)
 		return err
 	}
 	defer file.Close()
@@ -102,13 +102,13 @@ func (network *Network) dump(dumpPath string) error {
 	// 通过json将网络对象转化成json字符串
 	bytes, err := json.Marshal(network)
 	if err != nil {
-		logrus.Errorf("dump: json.Marshal error: ", err)
+		logrus.Errorf("dump: json.Marshal error: %v", err)
 		return err
 	}
 	// 将json字符串写入到文件中
 	_, err = file.Write(bytes)
 	if err != nil {
-		logrus.Errorf("dump: file.Write error: ", err)
+		logrus.Errorf("dump: file.Write error: %v", err)
 		return err
 	}
 	return nil
@@ -119,7 +119,7 @@ func (network *Network) load(dumpPath string) error {
 	// 打开配置文件
 	file, err := os.Open(dumpPath)
 	if err != nil {
-		logrus.Errorf("load: os.Open error: ", err)
+		logrus.Errorf("load: os.Open error: %v", err)
 		return err
 	}
 	defer file.Close()
@@ -128,12 +128,12 @@ func (network *Network) load(dumpPath string) error {
 	nwjson := make([]byte, 2000)
 	n, err := file.Read(nwjson)
 	if err != nil {
-		logrus.Errorf("load: file.Read error: ", err)
+		logrus.Errorf("load: file.Read error: %v", err)
 		return err
 	}
 	// 将json串解码成网络对象
 	if err := json.Unmarshal(nwjson[:n], network); err != nil {
-		logrus.Errorf("load: json.Unmarshal error: ", err)
+		logrus.Errorf("load: json.Unmarshal error: %v", err)
 		return err
 	}
 	return nil
@@ -143,6 +143,8 @@ func (network *Network) load(dumpPath string) error {
 func Connect(networkName string, cinfo *container.ContainerInfo) error {
 	// 从networks字典中取到容器连接的网络信息，networks 保存了当前已经创建的网络
 	network, ok := networks[networkName]
+	logrus.Infof("network.IpRange: %v", network.IpRange) // 这里是正确的！
+
 	if !ok {
 		return fmt.Errorf("Connect: No such network: %s", networkName)
 	}
@@ -152,7 +154,7 @@ func Connect(networkName string, cinfo *container.ContainerInfo) error {
 	if err != nil {
 		return err
 	}
-	logrus.Infof("Connect: ip: %v",ip.To4())
+	logrus.Infof("Connect: ip: %v",ip.To4()) // 这里的 ip 是空的，问题一定出在 Allocate()
 
 	// 创建网络端点
 	endpoint := &Endpoint{
@@ -186,8 +188,11 @@ func Connect(networkName string, cinfo *container.ContainerInfo) error {
 	return nil
 }
 
+// 配置容器网络端点的地址和路由
 func configEndpointIpAddressAndRoute(endpoint *Endpoint, cinfo *container.ContainerInfo) error {
-	peerLink, err := netlink.LinkByName(endpoint.Device.Name)
+	//peerLink, err := netlink.LinkByName(endpoint.Device.Name) // 难道这里就是bug所在？
+	// veth 的另一端
+	peerLink, err := netlink.LinkByName(endpoint.Device.PeerName)
 	if err != nil {
 		return fmt.Errorf("configEndpointIpAddressAndRoute: fail config endpoint: %v", err)
 	}
@@ -206,12 +211,14 @@ func configEndpointIpAddressAndRoute(endpoint *Endpoint, cinfo *container.Contai
 
 	// 启动容器内的 Veth 端点
 	if err = setInterfaceUP(endpoint.Device.PeerName); err != nil {
+		logrus.Errorf("configEndpointIpAddressAndRoute: setInterfaceUP error: %v",err)
 		return err
 	}
 
 	// net namespace 中默认本地地址127.0.0.1的“lo”网卡是关闭状态
 	// 启动它以保证容器访问自己的请求
 	if err = setInterfaceUP("lo"); err != nil {
+		logrus.Errorf("configEndpointIpAddressAndRoute: setInterfaceUP \"lo\" error: %v",err)
 		return err
 	}
 
@@ -227,6 +234,7 @@ func configEndpointIpAddressAndRoute(endpoint *Endpoint, cinfo *container.Contai
 	// 添加路由到容器的网络空间
 	// 相当于执行 route add 命令
 	if err = netlink.RouteAdd(defaultRoute); err != nil {
+		logrus.Errorf("configEndpointIpAddressAndRoute: route add error: %v",err)
 		return err
 	}
 
@@ -299,8 +307,7 @@ func configPortMapping(endpoint *Endpoint, cinfo *container.ContainerInfo) error
 	return nil
 }
 
-// 展示网络列表
-// 通过 mydocker network list 显示当前创建了哪些网络
+// 初始化网络（也就是把网络配置信息从文件中读取到内存相应的数据结构中以供调用）
 func Init() error {
 	// 加载网络驱动
 	bridgeDriver := BridgeNetworkDriver{}
@@ -337,6 +344,8 @@ func Init() error {
 	return nil
 }
 
+// 展示网络列表
+// 通过 mydocker network list 显示当前创建了哪些网络
 func ListNetwork() {
 	w := tabwriter.NewWriter(os.Stdout, 12, 1, 3, ' ', 0)
 	fmt.Fprint(w, "NAME\tIP-RANGE\tDRIVER\n")
